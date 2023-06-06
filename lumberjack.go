@@ -27,12 +27,15 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/aliyun/aliyun-oss-go-sdk/oss"
 )
 
 const (
@@ -107,12 +110,29 @@ type Logger struct {
 	// using gzip. The default is not to perform compression.
 	Compress bool `json:"compress" yaml:"compress"`
 
-	size int64
-	file *os.File
-	mu   sync.Mutex
+	// RotateSeconds determines how long of the log file being used before it gets
+	// rotated. Even if `MaxSize` is not reached. This ensures we compress and upload
+	// logs to OSS without too much delay.
+	RotateSeconds int `json:"rotateSeconds" yaml:"rotateSeconds"`
+
+	// OSSConfig enables uploading compressed log to OSS
+	OSSConfig *OSSConfig `json:"ossConfig" yaml:"ossConfig"`
+
+	size         int64
+	file         *os.File
+	creationTime time.Time
+	mu           sync.Mutex
 
 	millCh    chan bool
 	startMill sync.Once
+}
+
+type OSSConfig struct {
+	Endpoint        string
+	AccessKeyID     string
+	AccessKeySecret string
+	BucketName      string
+	ObjectPrefix    string
 }
 
 var (
@@ -126,6 +146,9 @@ var (
 	// variable so tests can mock it out and not need to write megabytes of data
 	// to disk.
 	megabyte = 1024 * 1024
+
+	// host name
+	hostName, _ = os.Hostname()
 )
 
 // Write implements io.Writer.  If a write would cause the log file to be larger
@@ -149,7 +172,8 @@ func (l *Logger) Write(p []byte) (n int, err error) {
 		}
 	}
 
-	if l.size+writeLen > l.max() {
+	if l.size+writeLen > l.max() ||
+		(l.RotateSeconds > 0 && time.Since(l.creationTime) > time.Duration(l.RotateSeconds)*time.Second) {
 		if err := l.rotate(); err != nil {
 			return 0, err
 		}
@@ -237,6 +261,7 @@ func (l *Logger) openNew() error {
 		return fmt.Errorf("can't open new logfile: %s", err)
 	}
 	l.file = f
+	l.creationTime = time.Now()
 	l.size = 0
 	return nil
 }
@@ -285,6 +310,7 @@ func (l *Logger) openExistingOrNew(writeLen int) error {
 	}
 	l.file = file
 	l.size = info.Size()
+	l.creationTime = info.ModTime()
 	return nil
 }
 
@@ -320,9 +346,7 @@ func (l *Logger) millRunOnce() error {
 			// Only count the uncompressed log file or the
 			// compressed log file, not both.
 			fn := f.Name()
-			if strings.HasSuffix(fn, compressSuffix) {
-				fn = fn[:len(fn)-len(compressSuffix)]
-			}
+			fn = strings.TrimSuffix(fn, compressSuffix)
 			preserved[fn] = true
 
 			if len(preserved) > l.MaxBackups {
@@ -364,7 +388,7 @@ func (l *Logger) millRunOnce() error {
 	}
 	for _, f := range compress {
 		fn := filepath.Join(l.dir(), f.Name())
-		errCompress := compressLogFile(fn, fn+compressSuffix)
+		errCompress := l.compressLogFile(fn, fn+compressSuffix)
 		if err == nil && errCompress != nil {
 			err = errCompress
 		}
@@ -378,7 +402,10 @@ func (l *Logger) millRunOnce() error {
 func (l *Logger) millRun() {
 	for range l.millCh {
 		// what am I going to do, log this?
-		_ = l.millRunOnce()
+		err := l.millRunOnce()
+		if err != nil {
+			log.Printf("millRun error: %v", err)
+		}
 	}
 }
 
@@ -465,7 +492,7 @@ func (l *Logger) prefixAndExt() (prefix, ext string) {
 
 // compressLogFile compresses the given log file, removing the
 // uncompressed log file if successful.
-func compressLogFile(src, dst string) (err error) {
+func (l *Logger) compressLogFile(src, dst string) (err error) {
 	f, err := os.Open(src)
 	if err != nil {
 		return fmt.Errorf("failed to open log file: %v", err)
@@ -506,6 +533,27 @@ func compressLogFile(src, dst string) (err error) {
 	}
 	if err := gzf.Close(); err != nil {
 		return err
+	}
+
+	if cfg := l.OSSConfig; cfg != nil {
+		ossClient, err := oss.New(cfg.Endpoint, cfg.AccessKeyID, cfg.AccessKeySecret)
+		if err != nil {
+			return fmt.Errorf("new oss client error: %v, endpoint: %+v", err, cfg.Endpoint)
+		}
+		bucket, err := ossClient.Bucket(cfg.BucketName)
+		if err != nil {
+			return fmt.Errorf("oss bucket error: %v, bucket: %+v", err, cfg.BucketName)
+		}
+		objectName := fmt.Sprintf("%s/%04d-%02d/%s-%s",
+			strings.TrimSuffix(cfg.ObjectPrefix, "/"),
+			fi.ModTime().Year(),
+			fi.ModTime().Month(),
+			hostName,
+			filepath.Base(dst),
+		)
+		if err := bucket.PutObjectFromFile(objectName, dst); err != nil {
+			return fmt.Errorf("upload to oss error: %v, object: %s", err, objectName)
+		}
 	}
 
 	if err := f.Close(); err != nil {

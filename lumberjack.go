@@ -544,10 +544,11 @@ func (l *Logger) compressLogFile(src, dst string) (err error) {
 		if err != nil {
 			return fmt.Errorf("oss bucket error: %v, bucket: %+v", err, cfg.BucketName)
 		}
-		objectName := fmt.Sprintf("%s/%04d-%02d/%s-%s",
+		objectName := fmt.Sprintf("%s/%04d-%02d-%02d/%s-%s",
 			strings.TrimSuffix(cfg.ObjectPrefix, "/"),
 			fi.ModTime().Year(),
 			fi.ModTime().Month(),
+			fi.ModTime().Day(),
 			hostName,
 			filepath.Base(dst),
 		)

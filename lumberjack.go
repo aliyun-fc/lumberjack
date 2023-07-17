@@ -549,8 +549,8 @@ func (l *Logger) compressLogFile(src, dst string) (err error) {
 			fi.ModTime().Year(),
 			fi.ModTime().Month(),
 			fi.ModTime().Day(),
-			hostName,
-			filepath.Base(dst),
+			strings.TrimSuffix(filepath.Base(dst), ".log.gz"),
+			hostName+".log.gz",
 		)
 		if err := bucket.PutObjectFromFile(objectName, dst); err != nil {
 			return fmt.Errorf("upload to oss error: %v, object: %s", err, objectName)

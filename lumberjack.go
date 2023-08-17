@@ -131,6 +131,7 @@ type OSSConfig struct {
 	Endpoint        string
 	AccessKeyID     string
 	AccessKeySecret string
+	SecurityToken   string
 	BucketName      string
 	ObjectPrefix    string
 }
@@ -536,7 +537,7 @@ func (l *Logger) compressLogFile(src, dst string) (err error) {
 	}
 
 	if cfg := l.OSSConfig; cfg != nil {
-		ossClient, err := oss.New(cfg.Endpoint, cfg.AccessKeyID, cfg.AccessKeySecret)
+		ossClient, err := oss.New(cfg.Endpoint, cfg.AccessKeyID, cfg.AccessKeySecret, oss.SecurityToken(cfg.SecurityToken))
 		if err != nil {
 			return fmt.Errorf("new oss client error: %v, endpoint: %+v", err, cfg.Endpoint)
 		}

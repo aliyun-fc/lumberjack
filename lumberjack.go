@@ -545,11 +545,13 @@ func (l *Logger) compressLogFile(src, dst string) (err error) {
 		if err != nil {
 			return fmt.Errorf("oss bucket error: %v, bucket: %+v", err, cfg.BucketName)
 		}
+		loc, _ := time.LoadLocation("Asia/Shanghai")
+		chinaTime := fi.ModTime().In(loc)
 		objectName := fmt.Sprintf("%s/%04d-%02d-%02d/%s-%s",
 			strings.TrimSuffix(cfg.ObjectPrefix, "/"),
-			fi.ModTime().Year(),
-			fi.ModTime().Month(),
-			fi.ModTime().Day(),
+			chinaTime.Year(),
+			chinaTime.Month(),
+			chinaTime.Day(),
 			strings.TrimSuffix(filepath.Base(dst), ".log.gz"),
 			hostName+".log.gz",
 		)
